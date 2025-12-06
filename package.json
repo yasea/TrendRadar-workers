@@ -1,0 +1,22 @@
+{
+  "name": "trendradar-worker",
+  "version": "1.10",
+  "description": "TrendRadar - Cloudflare Workers版本",
+  "main": "src/index.js",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail"
+  },
+  "keywords": [
+    "cloudflare",
+    "workers",
+    "news",
+    "trending"
+  ],
+  "author": "",
+  "license": "GPL-3.0",
+  "devDependencies": {
+    "wrangler": "^3.0.0"
+  }
+}

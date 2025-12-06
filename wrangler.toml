@@ -1,0 +1,88 @@
+# TrendRadar Cloudflare Workers 配置文件
+# 详细文档: https://developers.cloudflare.com/workers/wrangler/configuration/
+
+# Worker 名称 (会成为你的域名: trendradar-worker.your-subdomain.workers.dev)
+name = "trendradar-worker"
+
+# 主入口文件
+main = "src/index.js"
+
+# 兼容性日期 (使用最新的 Workers 运行时)
+compatibility_date = "2024-12-05"
+
+# ============================================
+# KV 命名空间配置 (数据存储)
+# ============================================
+# 创建命令: wrangler kv:namespace create "TRENDRADAR_KV"
+# 运行后会返回 id, 将下面的 "your_kv_namespace_id" 替换为实际的 id
+
+[[kv_namespaces]]
+binding = "TRENDRADAR_KV"
+id = "e15a9d08a7364aa39e5c138038524255"  # ⚠️ 必须替换为实际的 KV namespace ID
+
+# ============================================
+# 环境变量配置
+# ============================================
+[vars]
+# 版本号
+VERSION = "1.10"
+
+# 是否启用爬虫功能 (true/false)
+ENABLE_CRAWLER = "true"
+
+# 是否启用推送通知 (true/false)
+ENABLE_NOTIFICATION = "true"
+
+# 报告模式:
+# - "daily": 当日汇总模式 (推送当日所有匹配新闻)
+# - "current": 当前榜单模式 (推送当前榜单匹配新闻)
+# - "incremental": 增量监控模式 (只推送新增内容)
+REPORT_MODE = "incremental"
+
+# ============================================
+# 定时任务配置 (Cron Triggers)
+# ============================================
+# 取消下面的注释以启用定时任务
+# 部署后需要等待几分钟才会生效
+
+[triggers]
+crons = ["0 0,2,4,6,8,10,12 * * *"]  # 北京时间 8,10,12,14,16,18,20点 (UTC 0,2,4,6,8,10,12)
+
+# 常用 Cron 表达式示例:
+# "0 */1 * * *"           - 每1小时
+# "0 */2 * * *"           - 每2小时
+# "0 9,12,18,21 * * *"    - 每天 9:00, 12:00, 18:00, 21:00
+# "0 8-20/2 * * *"        - 每天 8:00-20:00 之间每2小时
+# "0 0 * * *"             - 每天 0:00 (午夜)
+
+# ============================================
+# Secrets 配置 (敏感信息)
+# ============================================
+# ⚠️ 不要在这里直接填写 Webhook URL 等敏感信息!
+# 使用 wrangler secret put 命令设置:
+
+# 钉钉推送:
+# wrangler secret put DINGTALK_WEBHOOK_URL
+
+# 企业微信推送:
+# wrangler secret put WEWORK_WEBHOOK_URL
+# wrangler secret put WEWORK_MSG_TYPE  # 可选: "markdown" 或 "text"
+
+# Telegram 推送:
+# wrangler secret put TELEGRAM_BOT_TOKEN
+# wrangler secret put TELEGRAM_CHAT_ID
+ 
+
+# ============================================
+# 其他配置 (可选)
+# ============================================
+
+# 自定义域名 (需要在 Cloudflare Dashboard 中配置)
+# routes = [
+#   { pattern = "trendradar.example.com", custom_domain = true }
+# ]
+
+# 环境变量 (开发环境)
+# [env.dev.vars]
+# ENABLE_CRAWLER = "false"
+# ENABLE_NOTIFICATION = "false"

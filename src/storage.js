@@ -1,0 +1,390 @@
+// 存储管理模块 (使用Cloudflare KV)
+export class StorageManager {
+    constructor(kv) {
+        this.kv = kv;
+    }
+
+    // 保存今日新闻数据
+    async saveTodayNews(newsData) {
+        const today = this.getDateKey();
+        const key = `news:${today}`;
+
+        await this.kv.put(key, JSON.stringify(newsData), {
+            expirationTtl: 86400 * 7 // 7天过期
+        });
+    }
+
+    // 获取今日新闻数据
+    async getTodayNews() {
+        const today = this.getDateKey();
+        const key = `news:${today}`;
+
+        const data = await this.kv.get(key);
+        return data ? JSON.parse(data) : null;
+    }
+
+    // 保存历史新闻标题 (用于增量模式 - 7天滚动窗口)
+    async saveHistoryTitles(titles) {
+        const key = 'history_titles_7days';
+        const now = Date.now();
+        const sevenDaysAgo = now - (7 * 86400 * 1000);
+
+        // 获取现有历史记录
+        let historyData = {};
+        try {
+            const existing = await this.kv.get(key);
+            if (existing) {
+                historyData = JSON.parse(existing);
+            }
+        } catch (e) {
+            console.error('读取历史记录失败:', e);
+            historyData = {};
+        }
+
+        // 清理7天前的数据
+        const cleanedData = {};
+        for (const [timestamp, titleList] of Object.entries(historyData)) {
+            if (parseInt(timestamp) > sevenDaysAgo) {
+                cleanedData[timestamp] = titleList;
+            }
+        }
+
+        // 添加当前标题（使用当前时间戳作为key）
+        cleanedData[now] = Array.isArray(titles) ? titles : Array.from(titles);
+
+        // 保存更新后的历史记录（30天过期，实际只保留7天数据）
+        await this.kv.put(key, JSON.stringify(cleanedData), {
+            expirationTtl: 86400 * 30
+        });
+
+        console.log('📝 保存历史标题:', {
+            新增标题数: cleanedData[now].length,
+            历史记录条数: Object.keys(cleanedData).length,
+            总标题数: Object.values(cleanedData).flat().length
+        });
+    }
+
+    // 获取历史新闻标题（最近7天）
+    async getHistoryTitles() {
+        const key = 'history_titles_7days';
+        const now = Date.now();
+        const sevenDaysAgo = now - (7 * 86400 * 1000);
+
+        try {
+            const data = await this.kv.get(key);
+            if (!data) {
+                console.log('📭 无历史记录');
+                return new Set();
+            }
+
+            const historyData = JSON.parse(data);
+            const allTitles = new Set();
+
+            // 合并所有7天内的标题
+            let validRecords = 0;
+            for (const [timestamp, titleList] of Object.entries(historyData)) {
+                if (parseInt(timestamp) > sevenDaysAgo) {
+                    validRecords++;
+                    if (Array.isArray(titleList)) {
+                        titleList.forEach(title => allTitles.add(title));
+                    }
+                }
+            }
+
+            console.log('📚 读取历史标题:', {
+                有效记录数: validRecords,
+                总标题数: allTitles.size,
+                时间范围: '最近7天'
+            });
+
+            return allTitles;
+        } catch (e) {
+            console.error('解析历史标题失败:', e);
+            return new Set();
+        }
+    }
+
+    // 保存推送记录
+    async savePushRecord(reportType) {
+        const today = this.getDateKey();
+        const key = `push:${today}`;
+
+        const record = {
+            pushed: true,
+            pushTime: new Date().toISOString(),
+            reportType
+        };
+
+        await this.kv.put(key, JSON.stringify(record), {
+            expirationTtl: 86400 * 7
+        });
+    }
+
+    // 检查今天是否已推送
+    async hasPushedToday() {
+        const today = this.getDateKey();
+        const key = `push:${today}`;
+
+        const data = await this.kv.get(key);
+        if (!data) return false;
+
+        const record = JSON.parse(data);
+        return record.pushed === true;
+    }
+
+    // 保存关键词配置
+    async saveKeywords(keywords) {
+        await this.kv.put('keywords', keywords);
+    }
+
+    // 获取关键词配置
+    async getKeywords() {
+        const keywords = await this.kv.get('keywords');
+        return keywords || this.getDefaultKeywords();
+    }
+
+    // 获取默认关键词
+    getDefaultKeywords() {
+        return `AI
+人工智能
+大模型
+LLM
+AIGC
+AGI
+多模态
+视频生成
+文生图
+Midjourney
+Stable Diffusion
+ChatGPT
+OpenAI
+o1
+Claude
+Gemini
+DeepSeek
+Kimi
+Qwen
+通义千问
+文心一言
+RAG
+Prompt
+AI Agent
+@20
+
+NVIDIA
+英伟达
+黄仁勋
+AMD
+Intel
+微软
+Copilot
+Azure
+谷歌
+DeepMind
+苹果
+Vision Pro
+Meta
+扎克伯格
+特斯拉
+马斯克
+xAI
+Grok
+@15
+
+华为
+鸿蒙
+麒麟
+阿里
+阿里云
+通义
+腾讯
+混元
+字节
+抖音
+TikTok
+百度
+文心
+小米
+雷军
+商汤
+讯飞
+美团
+拼多多
+@18
+
+芯片
+半导体
+光刻机
+EUV
+先进制程
+台积电
+中芯国际
+三星
+长江存储
+华虹
+ARM
+RISC-V
+国产芯片
+自主可控
+@12
+
+机器人
+人形机器人
+具身智能
+工业机器人
+Optimus
+Atlas
+优必选
+宇树
+自动驾驶
+FSD
+Waymo
+Robotaxi
+L4
+L5
+车路协同
+@12
+
++新能源
+电动车
+动力电池
+固态电池
+比亚迪
+宁德时代
+理想
+蔚来
+小鹏
+问界
+充电桩
+换电
+氢能源
+@12
+
+航空航天
+商业航天
+卫星
+火箭
+空间站
+SpaceX
+星舰
+Starship
+星链
+嫦娥
+天问
+神舟
+!娱乐
+!明星
+@12
+
+军事
+国防
+军工
+航母
+歼-20
+无人机
+反无人机
+高超音速
+导弹
+反导
+核潜艇
+驱逐舰
+无人艇
+@12
+
+国际关系
+地缘政治
+大国博弈
+中美
+台海
+俄乌
+中东
+以色列
+伊朗
+朝鲜
+北约
+金砖
+一带一路
+@10
+
+能源
+清洁能源
+碳中和
+碳达峰
+核能
+核聚变
+氢能
+光伏
+风电
+储能
+油价
+天然气
+@10
+
+医疗
+医药
+生物科技
+创新药
+基因编辑
+mRNA
+CRISPR
+AI医疗
+脑机接口
+Neuralink
+抗衰老
+癌症
+疫苗
+@12
+
+量子计算
+6G
+卫星互联网
+元宇宙
+VR
+AR
+XR
+区块链
+Web3
+比特币
+云计算
+边缘计算
+算力
+智能制造
+数字经济
+新质生产力
+@15
+
+胖东来
+零售
+商业模式
+人口
+老龄化
+教育
+高考
+房地产
+楼市
+降息
+GDP
+@10
+
+`;
+    }
+
+    // 获取日期键
+    getDateKey() {
+        const now = new Date();
+        const utc = now.getTime() + (now.getTimezoneOffset() * 60000);
+        const beijing = new Date(utc + (8 * 3600000));
+
+        const year = beijing.getFullYear();
+        const month = String(beijing.getMonth() + 1).padStart(2, '0');
+        const day = String(beijing.getDate()).padStart(2, '0');
+
+        return `${year}${month}${day}`;
+    }
+
+    // 清理过期数据
+    async cleanupOldData() {
+        // KV会自动根据TTL清理,这里可以添加额外的清理逻辑
+        console.log('KV自动清理过期数据');
+    }
+}
