@@ -65,10 +65,32 @@ export class StorageManager {
     }
 
     // 获取历史新闻标题（最近7天）
-    async getHistoryTitles() {
+    async getHistoryTitles(excludeToday = false) {
         const key = 'history_titles_7days';
-        const now = Date.now();
-        const sevenDaysAgo = now - (7 * 86400 * 1000);
+        const now = new Date();
+        const utc = now.getTime() + (now.getTimezoneOffset() * 60000);
+        const beijingNow = new Date(utc + (8 * 3600000));
+
+        // 计算北京时间今天凌晨的时间戳 (用于排除今天的数据)
+        const beijingTodayStart = new Date(beijingNow.getFullYear(), beijingNow.getMonth(), beijingNow.getDate()).getTime();
+        // 将北京时间转换回UTC时间戳 (因为存储的是UTC时间戳? 不，存储的是 Date.now() 即 UTC)
+        // Date.now() 是 UTC 时间戳。
+        // beijingTodayStart 是 "北京时间今天0点" 对应的 Date 对象，其 .getTime() 返回的是该时刻的 UTC 时间戳。
+        // 例如 北京 8:00 -> UTC 0:00 -> timestamp X.
+        // 所以直接用 .getTime() 比较存储的 timestamps 是正确的。
+        const startOfToday = beijingTodayStart - (8 * 3600000); // 修正：上面构造的 "new Date(y,m,d)" 是基于本地时区还是？
+
+        // new Date(...) 在 Cloudflare Worker 中通常是 UTC。
+        // 让我们简化逻辑：
+        // 存储使用的是 Date.now()。
+        // 我们要排除的是 "今天" (北京时间) 产生的数据。
+        // "今天" 的定义是： Beijing Time's Year/Month/Day matches current Beijing Time.
+
+        // 重新获取当前北京时间
+        const currentBeijingDate = this.getDateKey(); // YYYYMMDD string
+
+        const timestampNow = Date.now();
+        const sevenDaysAgo = timestampNow - (7 * 86400 * 1000);
 
         try {
             const data = await this.kv.get(key);
@@ -83,18 +105,37 @@ export class StorageManager {
             // 合并所有7天内的标题
             let validRecords = 0;
             for (const [timestamp, titleList] of Object.entries(historyData)) {
-                if (parseInt(timestamp) > sevenDaysAgo) {
-                    validRecords++;
-                    if (Array.isArray(titleList)) {
-                        titleList.forEach(title => allTitles.add(title));
+                const ts = parseInt(timestamp);
+
+                // 1. 检查是否在7天内
+                if (ts <= sevenDaysAgo) continue;
+
+                // 2. 如果 excludeToday 为真，检查该 timestamp 是否属于 "今天"
+                if (excludeToday) {
+                    // 将 timestamp 转为北京时间 YYYYMMDD
+                    // timestamp 是 UTC ms
+                    const recordDate = new Date(ts + (8 * 3600000));
+                    const recordY = recordDate.getUTCFullYear();
+                    const recordM = String(recordDate.getUTCMonth() + 1).padStart(2, '0');
+                    const recordD = String(recordDate.getUTCDate()).padStart(2, '0');
+                    const recordDateKey = `${recordY}${recordM}${recordD}`;
+
+                    if (recordDateKey === currentBeijingDate) {
+                        continue; // 跳过今天的记录
                     }
+                }
+
+                validRecords++;
+                if (Array.isArray(titleList)) {
+                    titleList.forEach(title => allTitles.add(title));
                 }
             }
 
             console.log('📚 读取历史标题:', {
                 有效记录数: validRecords,
                 总标题数: allTitles.size,
-                时间范围: '最近7天'
+                时间范围: '最近7天',
+                排除今日: excludeToday
             });
 
             return allTitles;
@@ -135,6 +176,74 @@ export class StorageManager {
     // 保存关键词配置
     async saveKeywords(keywords) {
         await this.kv.put('keywords', keywords);
+    }
+
+    // 记录Token消耗
+    async logTokenUsage(module, model, tokens, additionalInfo = {}) {
+        const today = this.getDateKey();
+        const key = `token_usage:${today}`;
+        const record = {
+            timestamp: new Date().toISOString(),
+            module,        // 'translator' | 'deduplicator'
+            model,         // e.g. 'deepseek-chat'
+            tokens,        // { prompt, completion, total }
+            ...additionalInfo
+        };
+
+        // 获取当天现有日志
+        let logs = [];
+        try {
+            const existing = await this.kv.get(key);
+            if (existing) {
+                logs = JSON.parse(existing);
+            }
+        } catch (e) {
+            // ignore
+        }
+
+        logs.push(record);
+
+        // 保存 (保留30天)
+        await this.kv.put(key, JSON.stringify(logs), {
+            expirationTtl: 86400 * 30
+        });
+    }
+
+    // 获取Token消耗日志
+    async getTokenUsageLogs(days = 7) {
+        const logs = [];
+        const today = new Date();
+
+        for (let i = 0; i < days; i++) {
+            const date = new Date(today);
+            date.setDate(date.getDate() - i);
+            const year = date.getFullYear();
+            const month = String(date.getMonth() + 1).padStart(2, '0');
+            const day = String(date.getDate()).padStart(2, '0');
+            const dateKey = `${year}${month}${day}`;
+
+            try {
+                const data = await this.kv.get(`token_usage:${dateKey}`);
+                if (data) {
+                    const records = JSON.parse(data);
+                    // 汇总当天的消耗
+                    const summary = records.reduce((acc, curr) => {
+                        acc.totalTokens += (curr.tokens?.total_tokens || 0);
+                        acc.count += 1;
+                        return acc;
+                    }, { date: dateKey, totalTokens: 0, count: 0, distinctModules: [...new Set(records.map(r => r.module))] });
+
+                    logs.push({
+                        date: dateKey,
+                        summary,
+                        records // 包含详细记录
+                    });
+                }
+            } catch (e) {
+                // ignore
+            }
+        }
+        return logs;
     }
 
     // 获取关键词配置

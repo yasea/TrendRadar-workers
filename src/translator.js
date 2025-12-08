@@ -1,7 +1,8 @@
 export class TranslationService {
-    constructor(config, kv) {
+    constructor(config, storage) {
         this.config = config;
-        this.kv = kv;
+        this.storage = storage;
+        this.kv = storage.kv; // 兼容旧代码引用
         this.memoryCache = new Map(); // 内存缓存，避免同一次执行中重复查询KV
     }
 
@@ -64,6 +65,13 @@ export class TranslationService {
 
             const data = await response.json();
             let translated = data.choices[0]?.message?.content?.trim();
+
+            // 记录 Token 消耗
+            if (data.usage) {
+                this.storage.logTokenUsage('translator', data.model, data.usage, {
+                    textLength: text.length
+                }).catch(e => console.error('Token logging failed:', e));
+            }
 
             // 去除可能的多余引号
             if (translated && (translated.startsWith('"') && translated.endsWith('"'))) {

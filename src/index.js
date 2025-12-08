@@ -9,6 +9,7 @@ import { StorageManager } from './storage.js';
 import { HtmlGenerator } from './html.js';
 import { HolidayService } from './holiday.js';
 import { TranslationService } from './translator.js';
+import { DeduplicationService } from './deduplicator.js';
 
 export default {
     // 定时触发 (Cron Trigger)
@@ -44,6 +45,8 @@ export default {
                 return await handleConfig(request, env);
             } else if (path === '/api/logs') {
                 return await handleLogs(request, env);
+            } else if (path === '/api/token_logs') {
+                return await handleTokenLogs(request, env);
             } else {
                 return new Response('Not Found', { status: 404 });
             }
@@ -144,7 +147,8 @@ async function handleCrawl(env, forcePush = false) {
     const processor = new DataProcessor(config);
     const notifier = new NotificationService(config);
     const holidayService = new HolidayService(config, env.TRENDRADAR_KV);
-    const translationService = new TranslationService(config, env.TRENDRADAR_KV);
+    const translationService = new TranslationService(config, storage);
+    const deduplicator = new DeduplicationService(config, storage);
 
     const startTime = Date.now();
     console.log('========================================');
@@ -239,6 +243,8 @@ async function handleCrawl(env, forcePush = false) {
     let notificationSent = false;
     let pushReason = '';
 
+    let historyForDeduplication = [];
+
     if (config.ENABLE_NOTIFICATION) {
         console.log('📢 准备发送通知...');
 
@@ -249,6 +255,7 @@ async function handleCrawl(env, forcePush = false) {
 
         if (config.REPORT_MODE === 'incremental') {
             const historyTitles = await storage.getHistoryTitles();
+            historyForDeduplication = Array.from(historyTitles);
 
             const { filteredNews, newNewsCount, currentTitles, newTitles } = filterNewsByHistory(matchedNews, historyTitles);
 
@@ -278,8 +285,17 @@ async function handleCrawl(env, forcePush = false) {
         if (shouldPush) {
             console.log('📤 开始发送通知...');
             try {
+                // Flatten and Deduplicate
+                const allNews = [];
+                for (const list of Object.values(newsToPush)) {
+                    allNews.push(...list);
+                }
+
+                console.log('🔄 执行深度去重...');
+                const deduplicatedNews = await deduplicator.deduplicate(allNews, historyForDeduplication);
+
                 // 生成推送内容
-                const textContent = generateTextReport(newsToPush, reportInfo);
+                const textContent = generateTextReport(deduplicatedNews, reportInfo);
                 console.log('📝 生成的报告长度:', textContent.length, '字符');
 
                 const notifyResults = await notifier.sendNotifications(textContent, null);
@@ -318,33 +334,19 @@ async function handleCrawl(env, forcePush = false) {
     };
 }
 
-// 生成文本报告 (优化版 - 合并所有新闻并去重)
-function generateTextReport(matchedNews, reportInfo) {
+// 生成文本报告 (接受已去重的扁平化新闻列表)
+function generateTextReport(newsList, reportInfo) {
     const { reportMode, totalNews, hotNews, generateTime } = reportInfo;
-    const reportModeText = {
-        'daily': '当日汇总',
-        'current': '当前榜单',
-        'incremental': '增量监控'
-    }[reportMode] || reportMode;
 
-    // 收集所有新闻
-    const allNews = [];
-    for (const newsList of Object.values(matchedNews)) {
-        allNews.push(...newsList);
-    }
-
-    // 语义去重 (基于标题相似度)
-    const deduplicatedNews = deduplicateNewsByTitle(allNews);
-
-    // 按权重排序
-    deduplicatedNews.sort((a, b) => (b.weight || 0) - (a.weight || 0));
+    // Sort by weight
+    newsList.sort((a, b) => (b.weight || 0) - (a.weight || 0));
 
     // 生成推送内容
     let text = `🔥 热点新闻推送\n\n`;
-    text += ` ${deduplicatedNews.length}条 |  ${generateTime}\n`;
+    text += ` ${newsList.length}条 |  ${generateTime}\n`;
     // text += `━━━━━━━━━━━━━━━━━━━\n\n`;
 
-    deduplicatedNews.forEach((news, index) => {
+    newsList.forEach((news, index) => {
         // 格式: 序号.[新闻标题](链接) - 来源平台
         if (news.url) {
             text += `${index + 1}. [${news.title}](${news.url}) - ${news.source}\n`;
@@ -356,81 +358,7 @@ function generateTextReport(matchedNews, reportInfo) {
     return text;
 }
 
-// 新闻去重函数 (基于标题相似度 - 使用Levenshtein Distance)
-function deduplicateNewsByTitle(newsList) {
-    if (newsList.length === 0) return [];
 
-    const deduplicated = [];
-    const seen = [];
-
-    for (const news of newsList) {
-        const title = news.title;
-
-        let isDuplicate = false;
-        for (let i = 0; i < seen.length; i++) {
-            const seenNews = seen[i];
-            const seenTitle = seenNews.title;
-
-            // 使用改进的相似度算法
-            const similarity = calculateStringSimilarity(title, seenTitle);
-
-            // 相似度阈值调整为0.7 (更严格的匹配)
-            if (similarity > 0.7) {
-                isDuplicate = true;
-                if ((news.weight || 0) > (seenNews.weight || 0)) {
-                    deduplicated[i] = news;
-                    seen[i] = news;
-                }
-                break;
-            }
-        }
-
-        if (!isDuplicate) {
-            deduplicated.push(news);
-            seen.push(news);
-        }
-    }
-
-    return deduplicated;
-}
-
-// Levenshtein Distance (编辑距离) 算法
-function levenshteinDistance(str1, str2) {
-    const len1 = str1.length;
-    const len2 = str2.length;
-
-    // 创建二维数组
-    const dp = Array(len1 + 1).fill(null).map(() => Array(len2 + 1).fill(0));
-
-    // 初始化第一行和第一列
-    for (let i = 0; i <= len1; i++) dp[i][0] = i;
-    for (let j = 0; j <= len2; j++) dp[0][j] = j;
-
-    // 动态规划计算编辑距离
-    for (let i = 1; i <= len1; i++) {
-        for (let j = 1; j <= len2; j++) {
-            if (str1[i - 1] === str2[j - 1]) {
-                dp[i][j] = dp[i - 1][j - 1];
-            } else {
-                dp[i][j] = Math.min(
-                    dp[i - 1][j] + 1,      // 删除
-                    dp[i][j - 1] + 1,      // 插入
-                    dp[i - 1][j - 1] + 1   // 替换
-                );
-            }
-        }
-    }
-
-    return dp[len1][len2];
-}
-
-// 预处理字符串: 移除标点符号、空格等，保留字母数字和中文
-function normalizeText(text) {
-    return text
-        .toLowerCase()
-        .replace(/[^\u4e00-\u9fa5a-z0-9]/g, '') // 只保留中文、字母、数字
-        .trim();
-}
 
 // 过滤新闻 (基于历史记录)
 function filterNewsByHistory(matchedNews, historyTitles) {
@@ -474,25 +402,12 @@ function filterNewsByHistory(matchedNews, historyTitles) {
     };
 }
 
-// 计算字符串相似度 (基于Levenshtein Distance)
-function calculateStringSimilarity(str1, str2) {
-    // 预处理: 标准化文本
-    const normalized1 = normalizeText(str1);
-    const normalized2 = normalizeText(str2);
-
-    // 如果有一个为空，相似度为0
-    if (!normalized1 || !normalized2) {
-        return 0;
-    }
-
-    // 计算编辑距离
-    const distance = levenshteinDistance(normalized1, normalized2);
-
-    // 计算相似度: 1 - (距离 / 最大长度)
-    const maxLength = Math.max(normalized1.length, normalized2.length);
-    const similarity = 1 - (distance / maxLength);
-
-    return similarity;
+// 预处理字符串 (保留给 filterNewsByHistory 使用)
+function normalizeText(text) {
+    return text
+        .toLowerCase()
+        .replace(/[^\u4e00-\u9fa5a-z0-9]/g, '') // 只保留中文、字母、数字
+        .trim();
 }
 
 // 处理关键词API
@@ -543,6 +458,7 @@ async function handleApiPush(request, env) {
     const storage = new StorageManager(env.TRENDRADAR_KV);
     const config = loadConfig(env);
     const notifier = new NotificationService(config);
+    const deduplicator = new DeduplicationService(config, storage);
 
     const todayNews = await storage.getTodayNews();
 
@@ -567,39 +483,40 @@ async function handleApiPush(request, env) {
             headers: { 'Content-Type': 'application/json; charset=utf-8' }
         });
     }
-
     const url = new URL(request.url);
     const force = url.searchParams.get('force') === '1';
 
     try {
-        // 默认推送所有
+        // 默认推送所有 (手动推送强制推送当天所有内容，忽略增量检查，但仍需去重)
         let newsToPush = todayNews.matchedNews;
 
-        // 如果是增量模式，也进行去重检查
-        if (config.REPORT_MODE === 'incremental') {
-            console.log('🔍 手动推送 - 执行增量检查...');
-            const historyTitles = await storage.getHistoryTitles();
-            const { filteredNews, newNewsCount, currentTitles } = filterNewsByHistory(todayNews.matchedNews, historyTitles);
+        // 获取历史记录用于去重参考 (但不用于过滤为空)
+        let historyForDeduplication = [];
 
-            if (newNewsCount === 0) {
-                console.log('⚠️ 没有新内容，跳过推送');
-                return new Response(JSON.stringify({
-                    success: false,
-                    message: '没有新内容 (所有内容均已在7天内推送过)'
-                }), {
-                    status: 200, // 返回200避免报错，但告知原因
-                    headers: { 'Content-Type': 'application/json; charset=utf-8' }
-                });
+        // 关键修复: 手动推送时，获取历史记录应排除"今天"的数据(excludeToday=true)
+        // 否则今天已抓取的数据会被视为"历史重复"而被去重掉
+        const historyTitles = await storage.getHistoryTitles(true);
+        historyForDeduplication = Array.from(historyTitles);
+
+        // 手动强推时，我们也更新历史记录，避免下次自动推送重复
+        const currentTitles = new Set();
+        for (const list of Object.values(newsToPush)) {
+            for (const news of list) {
+                currentTitles.add(news.title);
             }
+        }
+        await storage.saveHistoryTitles(Array.from(currentTitles));
 
-            newsToPush = filteredNews;
-            console.log(`✅ 发现 ${newNewsCount} 条新内容，准备推送`);
-
-            // 保存历史记录! (关键: 手动推送也要更新历史，否则下次还会推)
-            await storage.saveHistoryTitles(Array.from(currentTitles));
+        // Flatten and Deduplicate
+        const allNews = [];
+        for (const list of Object.values(newsToPush)) {
+            allNews.push(...list);
         }
 
-        const textContent = generateTextReport(newsToPush, todayNews.reportInfo);
+        console.log('🔄 手动推送 - 执行深度去重...');
+        const deduplicatedNews = await deduplicator.deduplicate(allNews, historyForDeduplication);
+
+        const textContent = generateTextReport(deduplicatedNews, todayNews.reportInfo);
         console.log('📝 生成报告,长度:', textContent.length, '字符');
 
         console.log('📤 开始发送通知...');
@@ -665,6 +582,27 @@ async function handleLogs(request, env) {
         success: true,
         logs,
         count: logs.length
+    }, null, 2), {
+        headers: { 'Content-Type': 'application/json; charset=utf-8' }
+    });
+}
+
+// 查看Token消耗日志接口
+async function handleTokenLogs(request, env) {
+    const storage = new StorageManager(env.TRENDRADAR_KV);
+
+    // 默认查看最近7天
+    const days = 7;
+    const logs = await storage.getTokenUsageLogs(days);
+
+    // 计算总消耗
+    const totalTokens = logs.reduce((sum, log) => sum + (log.summary?.totalTokens || 0), 0);
+
+    return new Response(JSON.stringify({
+        success: true,
+        days,
+        totalTokens,
+        logs
     }, null, 2), {
         headers: { 'Content-Type': 'application/json; charset=utf-8' }
     });

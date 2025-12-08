@@ -1,6 +1,6 @@
 // 配置管理模块
 export const DEFAULT_CONFIG = {
-    VERSION: '1.0',
+    VERSION: '1.1',
     REQUEST_INTERVAL: 1000,
     REPORT_MODE: 'incremental', // daily, current, incremental
     RANK_THRESHOLD: 5,
