@@ -30,6 +30,22 @@ export default {
     async fetch(request, env, ctx) {
         const url = new URL(request.url);
         const path = url.pathname;
+        // 增加限制， 不允许所有爬虫访问本网站
+        const ua = (request.headers.get('User-Agent') || '').toLowerCase();
+        // 1) 允许的常见浏览器 UA
+        const allowedBrowserPatterns = ['chrome', 'firefox', 'safari', 'edge'];
+
+        // 2) 常见恶意 UA 关键字
+        const blockedPatterns = [
+            'bot', 'spider', 'crawl', 'scrapy', 'python', 'python-requests',
+            'curl', 'wget', 'httpclient', 'java', 'php', 'go-http-client',
+            'libwww', 'aiohttp', 'axios', 'node-fetch', 'okhttp'
+        ];
+
+        // 3) UA 异常
+        if (!ua || ua.length < 5 || blockedPatterns.some(p => ua.includes(p)) || !allowedBrowserPatterns.some(p => ua.includes(p))) {
+            return new Response('Forbidden', { status: 403 });
+        }
 
         try {
             // 路由处理

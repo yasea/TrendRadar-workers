@@ -141,11 +141,12 @@ export class HtmlGenerator {
       font-size: 17px;
       font-weight: 600;
       color: #1a1a1a;
+      max-width: 480px;
     }
     .word-count {
       color: #666;
       font-size: 13px;
-      font-weight: 500;
+      font-weight: 500; 
     }
     .word-count.hot { color: #dc2626; font-weight: 600; }
     .word-count.warm { color: #ea580c; font-weight: 600; }
@@ -247,7 +248,7 @@ export class HtmlGenerator {
       body { padding: 12px; }
       .header { padding: 24px 20px; }
       .content { padding: 20px; }
-      .header-info { grid-template-columns: 1fr; gap: 12px; }
+      .header-info { gap: 12px; }
     }
     .header-manal{margin-top: 5px;}          
     .header-manal a{
@@ -260,20 +261,12 @@ export class HtmlGenerator {
 <body>
   <div class="container">
     <div class="header">
-      <div class="header-title">TrendRadar 热点新闻</div>
+      <div class="header-title">热点新闻 - ${reportModeText}</div>
       <div class="header-info">
-        <div class="info-item">
-          <span class="info-label">报告类型</span>
-          <span class="info-value">${reportModeText}</span>
-        </div>
         <div class="info-item">
           <span class="info-label">新闻总数</span>
           <span class="info-value">${totalNews} 条</span>
-        </div>
-        <div class="info-item">
-          <span class="info-label">热点新闻</span>
-          <span class="info-value">${hotNews} 条</span>
-        </div>
+        </div>        
         <div class="info-item">
           <span class="info-label">生成时间</span>
           <span class="info-value">${generateTime}</span>
@@ -283,7 +276,7 @@ export class HtmlGenerator {
     <div class="header-manal">
         <a href="/api/crawl?force=1">手动抓取</a>
         <a href="/api/push?force=1">手动推送</a>
-        <a href="/api/keywords">查看关键字</a>
+        <a href="/api/token_logs">Token消耗</a>
     </div>
     <div class="content"> 
       ${content}

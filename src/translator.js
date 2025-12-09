@@ -39,14 +39,14 @@ export class TranslationService {
 
             // 2. 调用API
             // console.log('Translating:', text);
-            const response = await fetch('https://api.deepseek.com/chat/completions', {
+            const response = await fetch('https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
                     'Authorization': `Bearer ${this.config.DEEPSEEK_API_KEY}`
                 },
                 body: JSON.stringify({
-                    model: "deepseek-chat",
+                    model: "deepseek-v3.2",
                     messages: [
                         {
                             role: "system",

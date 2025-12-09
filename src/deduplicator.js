@@ -82,14 +82,14 @@ ${JSON.stringify(contextList)}
 ${JSON.stringify(targetList)}
 `;
 
-        const response = await fetch('https://api.deepseek.com/chat/completions', {
+        const response = await fetch('https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
                 'Authorization': `Bearer ${this.config.DEEPSEEK_API_KEY}`
             },
             body: JSON.stringify({
-                model: "deepseek-chat", // 或 deepseek-coder
+                model: "deepseek-v3.2", // deepseek-chat
                 messages: [
                     {
                         role: "system",
