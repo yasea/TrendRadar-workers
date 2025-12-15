@@ -13,33 +13,45 @@ export class DeduplicationService {
     async deduplicate(newsList, historyList = []) {
         if (!newsList || newsList.length === 0) return [];
 
-        // 1. 第一阶段: 严格算法去重
-        // 使用较高的阈值 (0.8) 快速筛除明显的重复项 (完全匹配或微小差异)
+        // 1. 第一阶段:算法去重
         // 这样可以大幅减少传给 AI 的 token 数量
-        console.log('🧮 阶段一: 使用严格算法 (Similarity > 0.8) 去除明显重复项...');
+        console.log('🧮 阶段一: 使用算法 (Similarity > 0.8) 去除明显重复项...');
         const algoResult = this.deduplicateByAlgorithm(newsList, historyList, 0.8);
 
         // 如果没有配置 AI，或数据量过大/为空，直接返回算法结果
         if (!this.config.DEEPSEEK_API_KEY || algoResult.length === 0) {
+            console.log('未配置 AI 密钥或数据量过大/为空，跳过 AI 去重阶段');
             return algoResult;
         }
 
         // 限制 AI 处理的最大数量，避免超时或 excessive cost
-        if (algoResult.length > 100) {
-            console.log('⚠️ 待处理数据过多 (>100)，跳过 AI 去重阶段');
+        if (algoResult.length > 200) {
+            console.log('⚠️ 待处理数据过多 (>200)，跳过 AI 去重阶段');
             return algoResult;
         }
 
         try {
-            // 2. 准备上下文: 筛选相关的历史记录
-            // 只保留与当前剩余新闻有一定相似度 (Similarity > 0.4) 的历史记录
-            // 排除完全不相关的历史记录，进一步节省 Token
-            const relevantHistory = this.getRelevantHistory(algoResult, historyList, 0.4);
+            // 2. 预筛选: 区分"安全"与"可疑"数据
+            // 只将与历史记录或批次内其他数据有一定关联的"可疑"项发给 AI
+            // 这里的阈值(0.3)设定得较低，确保宁可错杀(发给AI)也不漏放(直接发布重复项)
+            const { itemsToCheck: suspiciousItems, safeItems, relevantHistory } = this.preFilterForAI(algoResult, historyList, 0.3);
 
-            console.log(`🤖 阶段二: DeepSeek 语义去重 | 待处理: ${algoResult.length} 条 | 关联历史上下文: ${relevantHistory.length} 条`);
+            if (suspiciousItems.length === 0) {
+                console.log('✅ 预筛选完成: 未发现疑似重复项，无需 AI 介入');
+                return safeItems;
+            }
 
-            // 3. 第二阶段: LLM 语义去重
-            return await this.deduplicateByLLM(algoResult, relevantHistory);
+            console.log(`🤖 阶段二: DeepSeek 语义去重 | 待处理(疑似): ${suspiciousItems.length} 条 | 安全(跳过): ${safeItems.length} 条 | 上下文: ${relevantHistory.length} 条`);
+
+            // 3. 第二阶段: LLM 语义去重 (仅针对可疑项)
+            const aiDedupedItems = await this.deduplicateByLLM(suspiciousItems, relevantHistory);
+
+            // 4. 合并结果
+            // safeItems 是肯定不重复的，aiDedupedItems 是经过 AI 筛选剩下的
+            // 保持相对顺序: 将 safeItems 和 aiDedupedItems 合并并按原顺序(如果需要)或者直接追加
+            // 简单追加即可，通常顺序不是严格约束
+            return [...safeItems, ...aiDedupedItems];
+
         } catch (e) {
             console.error('⚠️ LLM 去重失败, 降级使用算法结果:', e);
             return algoResult;
@@ -140,11 +152,7 @@ ${JSON.stringify(targetList)}
 
     /**
      * 使用混合算法去重
-     * @param {number} threshold - 相似度阈值 (默认 0.6, 严格模式建议 0.8)
-     */
-    /**
-     * 使用混合算法去重
-     * @param {number} threshold - 相似度阈值 (默认 0.6, 严格模式建议 0.8)
+     * @param {number} threshold - 相似度阈值 (默认 0.6)
      */
     deduplicateByAlgorithm(newsList, historyList, threshold = 0.6) {
         const deduplicated = [];
@@ -197,54 +205,87 @@ ${JSON.stringify(targetList)}
     }
 
     /**
-     * 筛选相关的历史记录
-     * 只有当历史记录与当前某条新闻的相似度超过 contextThreshold 时，才将其传给 AI
+     * 预筛选 AI 处理列表
+     * 通过低阈值算法检查，区分"安全"(Unique)和"可疑"(Potential Duplicate)数据
+     * 同时收集相关的历史上下文
      */
-    getRelevantHistory(newsList, historyList, contextThreshold = 0.4) {
-        if (!historyList || historyList.length === 0) return [];
+    preFilterForAI(newsList, historyList, threshold = 0.3) {
+        const suspiciousIndices = new Set();
+        const relevantHistory = new Set();
 
-        const relevantSet = new Set();
+        // 预分词，避免重复计算
+        const newsTokens = newsList.map(news => this.getTokens(news.title));
 
-        // 性能优化: 预先对 NewsList 进行分词，避免在内层循环重复分词
-        const newsTokens = newsList.map(news => {
-            const norm = this.normalizeText(news.title);
-            return new Set(norm.split(/[\s\p{P}]+/u));
-        });
+        // 1. 检查与历史记录的关联 (History vs News)
+        if (historyList && historyList.length > 0) {
+            for (const historyTitle of historyList) {
+                const historyTokens = this.getTokens(historyTitle);
+                if (historyTokens.size === 0) continue;
 
-        // 遍历历史记录
-        // 优化: 这里只使用 Jaccard 相似度来快速筛选，避免 Levenshtein 的高 CPU 消耗
-        // 上下文筛选不需要特别精确，只要有一定的词重叠即可
-        for (const historyTitle of historyList) {
-            const normHistory = this.normalizeText(historyTitle);
-            const historyTokens = new Set(normHistory.split(/[\s\p{P}]+/u));
+                let isHistoryRelevant = false;
 
-            if (historyTokens.size === 0) continue;
+                for (let i = 0; i < newsTokens.length; i++) {
+                    const nTokens = newsTokens[i];
+                    if (nTokens.size === 0) continue;
 
-            for (let i = 0; i < newsTokens.length; i++) {
-                const targetTokens = newsTokens[i];
-                if (targetTokens.size === 0) continue;
+                    // 快速 Jaccard 计算
+                    const jaccard = this.calculateJaccard(nTokens, historyTokens);
 
-                // Jaccard Calculation
-                let intersection = 0;
-                for (const t of historyTokens) {
-                    if (targetTokens.has(t)) intersection++;
+                    if (jaccard > threshold) {
+                        suspiciousIndices.add(i);
+                        isHistoryRelevant = true;
+                        // 注意: 不break! 一个历史标题可能对应多条新闻，都需要标记为可疑
+                    }
                 }
 
-                // Union size = sizeA + sizeB - intersection
-                const union = historyTokens.size + targetTokens.size - intersection;
-                const jaccard = intersection / union;
-
-                if (jaccard > 0.3) { // 降低阈值，仅凭 Jaccard 筛选 (相当于原先 Hybrid 0.4 左右)
-                    relevantSet.add(historyTitle);
-                    break; // 命中一次即可
+                if (isHistoryRelevant) {
+                    relevantHistory.add(historyTitle);
+                    if (relevantHistory.size >= 50) break; // 防止上下文过大
                 }
             }
-
-            // 限制最大上下文数量，防止 token 爆炸
-            if (relevantSet.size >= 50) break;
         }
 
-        return Array.from(relevantSet);
+        // 2. 检查批次内部关联 (News vs News)
+        // 任何有内部相似性的对，都必须交给 AI 决断保留哪一个
+        for (let i = 0; i < newsTokens.length; i++) {
+            for (let j = i + 1; j < newsTokens.length; j++) {
+                // 性能优化: 如果两项都已经标记为可疑，通常不需要再检查它们之间的相似性来增加 suspicious 标记
+                // 但为了严谨(比如它们虽然都和 History 无关，但彼此相似)，还是建议检查。
+                // 考虑到 n 通常很小 (< 50)，O(n^2) 的 Jaccard 开销可以接受
+                const score = this.calculateJaccard(newsTokens[i], newsTokens[j]);
+                if (score > threshold) {
+                    suspiciousIndices.add(i);
+                    suspiciousIndices.add(j);
+                }
+            }
+        }
+
+        const itemsToCheck = newsList.filter((_, i) => suspiciousIndices.has(i));
+        const safeItems = newsList.filter((_, i) => !suspiciousIndices.has(i));
+
+        return {
+            itemsToCheck,
+            safeItems,
+            relevantHistory: Array.from(relevantHistory)
+        };
+    }
+
+    getTokens(text) {
+        const norm = this.normalizeText(text);
+        return new Set(norm.split(/[\s\p{P}]+/u).filter(t => t.length > 0));
+    }
+
+    calculateJaccard(tokens1, tokens2) {
+        if (tokens1.size === 0 || tokens2.size === 0) return 0;
+        let intersection = 0;
+        // 遍历较小的集合以提高效率
+        const [smaller, larger] = tokens1.size < tokens2.size ? [tokens1, tokens2] : [tokens2, tokens1];
+
+        for (const t of smaller) {
+            if (larger.has(t)) intersection++;
+        }
+        const union = tokens1.size + tokens2.size - intersection;
+        return intersection / union;
     }
 
     /**

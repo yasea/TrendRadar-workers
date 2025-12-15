@@ -283,8 +283,7 @@ export class HtmlGenerator {
     </div>
     
     <div class="footer">
-      由 <strong>TrendRadar</strong> 生成 · 
-      <a href="https://github.com/sansan0/TrendRadar" target="_blank" class="footer-link">GitHub 开源项目</a>
+      <a href="https://github.com/yasea/TrendRadar-workers" target="_blank" class="footer-link">GitHub</a>
       <br>
       Cloudflare Workers 版本 ${this.config.VERSION}
     </div>
